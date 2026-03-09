@@ -1,0 +1,20 @@
+{
+  "name": "@steadytao/transmute",
+  "version": "0.1.0",
+  "description": "Browser-side local file conversion runtime with pluggable formats, handlers, and route planning",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./runtime": "./src/runtime.js",
+    "./registry": "./src/registry.js",
+    "./formats": "./src/formats.js",
+    "./kinds": "./src/kinds.js",
+    "./handlers/png": "./src/handlers/png.js",
+    "./handlers/jpg": "./src/handlers/jpg.js",
+    "./handlers/raster": "./src/handlers/raster.js"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ]
+}
