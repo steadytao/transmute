@@ -1,12 +1,49 @@
 import { TRANSMUTE_FORMATS } from "./formats.js";
 import { TRANSMUTE_KINDS } from "./kinds.js";
 import { TransmuteRegistry } from "./registry.js";
-import { jpgHandler } from "./handlers/jpg.js";
-import { pngHandler } from "./handlers/png.js";
+
+function createLazyHandlerManifest({
+  id,
+  label,
+  formatId,
+  priority,
+  produces,
+  consumes,
+  load,
+}) {
+  return Object.freeze({
+    id,
+    label,
+    formatId,
+    priority,
+    produces: Object.freeze([...(produces || [])]),
+    consumes: Object.freeze([...(consumes || [])]),
+    load,
+  });
+}
 
 export const DEFAULT_TRANSMUTE_FORMATS = TRANSMUTE_FORMATS;
 export const DEFAULT_TRANSMUTE_KINDS = TRANSMUTE_KINDS;
-export const DEFAULT_TRANSMUTE_HANDLERS = Object.freeze([pngHandler, jpgHandler]);
+export const DEFAULT_TRANSMUTE_HANDLERS = Object.freeze([
+  createLazyHandlerManifest({
+    id: "png",
+    label: "PNG handler",
+    formatId: "image/png",
+    priority: 100,
+    produces: ["raster-image"],
+    consumes: ["raster-image"],
+    load: async () => (await import("./handlers/png.js")).pngHandler,
+  }),
+  createLazyHandlerManifest({
+    id: "jpg",
+    label: "JPG handler",
+    formatId: "image/jpeg",
+    priority: 95,
+    produces: ["raster-image"],
+    consumes: ["raster-image"],
+    load: async () => (await import("./handlers/jpg.js")).jpgHandler,
+  }),
+]);
 
 export function createTransmuteRuntime({
   formats = DEFAULT_TRANSMUTE_FORMATS,

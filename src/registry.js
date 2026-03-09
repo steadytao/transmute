@@ -93,6 +93,7 @@ export class TransmuteRegistry {
     this.extensionToFormatId = new Map();
     this.handlers = new Map();
     this.handlersByFormatId = new Map();
+    this.loadedHandlers = new Map();
   }
 
   registerFormat(format) {
@@ -163,6 +164,7 @@ export class TransmuteRegistry {
       consumes: Object.freeze([...(handler.consumes || [])]),
       read: typeof handler.read === "function" ? handler.read : null,
       write: typeof handler.write === "function" ? handler.write : null,
+      load: typeof handler.load === "function" ? handler.load : null,
     });
 
     normalizedHandler.produces.forEach((kindId) => {
@@ -176,11 +178,19 @@ export class TransmuteRegistry {
       }
     });
 
-    if (normalizedHandler.produces.length && !normalizedHandler.read) {
-      throw new Error(`Handler ${normalizedHandler.id} must implement read().`);
+    if (
+      normalizedHandler.produces.length &&
+      !normalizedHandler.read &&
+      !normalizedHandler.load
+    ) {
+      throw new Error(`Handler ${normalizedHandler.id} must implement read() or load().`);
     }
-    if (normalizedHandler.consumes.length && !normalizedHandler.write) {
-      throw new Error(`Handler ${normalizedHandler.id} must implement write().`);
+    if (
+      normalizedHandler.consumes.length &&
+      !normalizedHandler.write &&
+      !normalizedHandler.load
+    ) {
+      throw new Error(`Handler ${normalizedHandler.id} must implement write() or load().`);
     }
 
     this.handlers.set(normalizedHandler.id, normalizedHandler);
@@ -198,6 +208,42 @@ export class TransmuteRegistry {
 
   getHandlerByFormatId(formatId) {
     return this.handlersByFormatId.get(formatId) || null;
+  }
+
+  async resolveHandler(handler) {
+    if (!handler) {
+      return null;
+    }
+
+    if (handler.read || handler.write) {
+      return handler;
+    }
+
+    if (!handler.load) {
+      throw new Error(`Handler ${handler.id} has no implementation loader.`);
+    }
+
+    if (this.loadedHandlers.has(handler.id)) {
+      return this.loadedHandlers.get(handler.id);
+    }
+
+    const loadedHandler = await handler.load();
+    if (!loadedHandler?.id || loadedHandler.id !== handler.id) {
+      throw new Error(`Handler loader mismatch for ${handler.id}.`);
+    }
+
+    const resolvedHandler = Object.freeze({
+      ...handler,
+      ...loadedHandler,
+      produces: Object.freeze([...(loadedHandler.produces || handler.produces || [])]),
+      consumes: Object.freeze([...(loadedHandler.consumes || handler.consumes || [])]),
+      read: typeof loadedHandler.read === "function" ? loadedHandler.read : null,
+      write: typeof loadedHandler.write === "function" ? loadedHandler.write : null,
+      load: handler.load,
+    });
+
+    this.loadedHandlers.set(handler.id, resolvedHandler);
+    return resolvedHandler;
   }
 
   getNodeLabel(node) {
@@ -385,8 +431,9 @@ export class TransmuteRegistry {
     };
 
     for (const step of route) {
+      const handler = await this.resolveHandler(step.handler);
       if (step.operation === "read") {
-        asset = await step.handler.read(asset, {
+        asset = await handler.read(asset, {
           sourceFormat: this.getFormat(step.fromNode.id),
           intermediateKind: this.getKind(step.toNode.id),
           options,
@@ -396,7 +443,7 @@ export class TransmuteRegistry {
         continue;
       }
 
-      asset = await step.handler.write(asset, {
+      asset = await handler.write(asset, {
         sourceKind: this.getKind(step.fromNode.id),
         targetFormat: this.getFormat(step.toNode.id),
         options,
