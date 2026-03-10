@@ -1,12 +1,14 @@
+/* Transmute runtime bootstrap. */
+
 import { TRANSMUTE_FORMATS } from "./formats.js";
 import { TRANSMUTE_KINDS } from "./kinds.js";
+import { TRANSMUTE_NORMALISERS } from "./normalisers.js";
 import { TransmuteRegistry } from "./registry.js";
 
 function createLazyHandlerManifest({
   id,
   label,
   formatId,
-  priority,
   produces,
   consumes,
   load,
@@ -15,7 +17,6 @@ function createLazyHandlerManifest({
     id,
     label,
     formatId,
-    priority,
     produces: Object.freeze([...(produces || [])]),
     consumes: Object.freeze([...(consumes || [])]),
     load,
@@ -29,7 +30,6 @@ export const DEFAULT_TRANSMUTE_HANDLERS = Object.freeze([
     id: "png",
     label: "PNG handler",
     formatId: "image/png",
-    priority: 100,
     produces: ["raster-image"],
     consumes: ["raster-image"],
     load: async () => (await import("./handlers/png.js")).pngHandler,
@@ -38,17 +38,18 @@ export const DEFAULT_TRANSMUTE_HANDLERS = Object.freeze([
     id: "jpg",
     label: "JPG handler",
     formatId: "image/jpeg",
-    priority: 95,
     produces: ["raster-image"],
     consumes: ["raster-image"],
     load: async () => (await import("./handlers/jpg.js")).jpgHandler,
   }),
 ]);
+export const DEFAULT_TRANSMUTE_NORMALISERS = TRANSMUTE_NORMALISERS;
 
 export function createTransmuteRuntime({
   formats = DEFAULT_TRANSMUTE_FORMATS,
   kinds = DEFAULT_TRANSMUTE_KINDS,
   handlers = DEFAULT_TRANSMUTE_HANDLERS,
+  normalisers = DEFAULT_TRANSMUTE_NORMALISERS,
 } = {}) {
   const registry = new TransmuteRegistry();
   formats.forEach((format) => {
@@ -59,6 +60,9 @@ export function createTransmuteRuntime({
   });
   handlers.forEach((handler) => {
     registry.registerHandler(handler);
+  });
+  normalisers.forEach((normaliser) => {
+    registry.registerNormaliser(normaliser);
   });
   return registry;
 }

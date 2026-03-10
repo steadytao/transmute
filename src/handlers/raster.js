@@ -1,3 +1,5 @@
+/* Shared raster image handler utilities. */
+
 function loadImageElement(blob, errorMessage) {
   return new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(blob);
@@ -73,8 +75,8 @@ export function renderRasterToCanvas(rasterAsset, options = {}) {
     throw new Error("Canvas 2D is unavailable in this browser.");
   }
 
-  if (options.backgroundColor) {
-    drawingContext.fillStyle = options.backgroundColor;
+  if (options.backgroundColour) {
+    drawingContext.fillStyle = options.backgroundColour;
     drawingContext.fillRect(0, 0, canvas.width, canvas.height);
   } else if (options.clearCanvas !== false) {
     drawingContext.clearRect(0, 0, canvas.width, canvas.height);

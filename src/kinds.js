@@ -1,3 +1,5 @@
+/* Transmute intermediate kind definitions. */
+
 export const RASTER_IMAGE_KIND = Object.freeze({
   id: "raster-image",
   label: "Raster image",
