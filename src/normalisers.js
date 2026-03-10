@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Tao
+// SPDX-License-Identifier: MPL-2.0
 /* Transmute source normaliser manifests. */
 
 function createLazyNormaliserManifest({

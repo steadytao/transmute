@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Tao
+// SPDX-License-Identifier: MPL-2.0
 /* Browser image raster fallback normaliser. */
 
 import { canvasToBlob } from "../handlers/raster.js";
@@ -51,12 +53,12 @@ export const browserImageRasterNormaliser = Object.freeze({
   async normalise(file, context) {
     const outputFormat = context.outputFormat;
     if (!outputFormat) {
-      throw new Error("The browser image normaliser did not receive an output format.");
+      throw new Error("The browser image normaliser did not receive an output format");
     }
 
     const renderable = await loadRenderableImage(
       file,
-      "This browser could not decode the uploaded image for normalisation.",
+      "This browser could not decode the uploaded image for normalisation",
     );
 
     try {
@@ -70,7 +72,7 @@ export const browserImageRasterNormaliser = Object.freeze({
       });
 
       if (!drawingContext) {
-        throw new Error("Canvas 2D is unavailable in this browser.");
+        throw new Error("Canvas 2D is unavailable in this browser");
       }
 
       if (isJpgOutput) {
@@ -88,7 +90,7 @@ export const browserImageRasterNormaliser = Object.freeze({
         isJpgOutput
           ? Math.max(0.1, Math.min(1, Number(context.options?.quality) || 0.92))
           : undefined,
-        "The browser failed to encode the normalised output.",
+        "The browser failed to encode the normalised output",
       );
 
       return {

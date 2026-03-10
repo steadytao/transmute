@@ -1,50 +1,17 @@
+// Copyright (c) 2026 Tao
+// SPDX-License-Identifier: MPL-2.0
 /* PNG format handler. */
 
-import { canvasToBlob, readRasterAsset, renderRasterToCanvas } from "./raster.js";
+import { createBrowserImageHandler } from "./browser-image.js";
 
-export const pngHandler = Object.freeze({
+export const pngHandler = createBrowserImageHandler({
   id: "png",
   label: "PNG handler",
   formatId: "image/png",
-  produces: Object.freeze(["raster-image"]),
-  consumes: Object.freeze(["raster-image"]),
-  async read(asset) {
-    const rasterAsset = await readRasterAsset(
-      asset.blob,
-      "The uploaded PNG could not be decoded.",
-    );
-    return {
-      ...rasterAsset,
-      sourceFileName: asset.fileName,
-    };
-  },
-  async write(intermediateAsset, context) {
-    const targetFormat = context.targetFormat;
-    try {
-      const canvas = renderRasterToCanvas(intermediateAsset, {
-        alpha: true,
-        clearCanvas: true,
-      });
-
-      const outputBlob = await canvasToBlob(
-        canvas,
-        targetFormat.mimeType,
-        undefined,
-        "The browser failed to encode the PNG output.",
-      );
-
-      return {
-        blob: outputBlob,
-        fileName: context.buildOutputFileName(
-          intermediateAsset.sourceFileName || "converted",
-          targetFormat.extensions[0],
-        ),
-        fileSize: outputBlob.size,
-        mimeType: targetFormat.mimeType,
-        formatId: targetFormat.id,
-      };
-    } finally {
-      intermediateAsset.release?.();
-    }
+  readError: "The uploaded PNG could not be decoded",
+  writeError: "The browser failed to encode the PNG output",
+  output: {
+    alpha: true,
+    quality: "lossless",
   },
 });
