@@ -1,4 +1,6 @@
-function normalizeExtension(value = "") {
+/* Transmute routing, catalogue, and normalisation registry. */
+
+function normaliseExtension(value = "") {
   const trimmed = String(value).trim().toLowerCase();
   if (!trimmed) return "";
   return trimmed.startsWith(".") ? trimmed : `.${trimmed}`;
@@ -7,6 +9,46 @@ function normalizeExtension(value = "") {
 function extractExtension(fileName = "") {
   const match = String(fileName).trim().toLowerCase().match(/(\.[^.]+)$/);
   return match ? match[1] : "";
+}
+
+function normaliseMimeType(value = "") {
+  return String(value).trim().toLowerCase();
+}
+
+function guessMediaKind(mimeType = "", extension = "") {
+  const normalisedMimeType = normaliseMimeType(mimeType);
+  const normalisedExtension = normaliseExtension(extension);
+
+  if (normalisedMimeType.startsWith("image/")) return "image";
+  if (normalisedMimeType.startsWith("audio/")) return "audio";
+  if (normalisedMimeType.startsWith("video/")) return "video";
+  if (
+    normalisedMimeType.startsWith("text/") ||
+    normalisedMimeType.includes("xml") ||
+    normalisedMimeType.includes("json")
+  ) {
+    return "text";
+  }
+
+  if (
+    [
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".webp",
+      ".svg",
+      ".gif",
+      ".bmp",
+      ".tif",
+      ".tiff",
+      ".ico",
+      ".avif",
+    ].includes(normalisedExtension)
+  ) {
+    return "image";
+  }
+
+  return "binary";
 }
 
 function guessFallbackLabel(file, extension) {
@@ -21,11 +63,11 @@ function guessFallbackLabel(file, extension) {
 }
 
 function buildOutputFileName(inputName, extension) {
-  const normalizedExtension = normalizeExtension(extension);
+  const normalisedExtension = normaliseExtension(extension);
   const baseName = String(inputName || "converted")
     .trim()
     .replace(/(\.[^.]+)?$/, "");
-  return `${baseName || "converted"}${normalizedExtension}`;
+  return `${baseName || "converted"}${normalisedExtension}`;
 }
 
 function createNodeKey(nodeType, nodeId) {
@@ -41,23 +83,64 @@ function parseNodeKey(nodeKey) {
 }
 
 function compareTargetPlans(left, right) {
-  if (left.steps !== right.steps) {
-    return left.steps - right.steps;
+  if (left.totalSteps !== right.totalSteps) {
+    return left.totalSteps - right.totalSteps;
   }
-  if (left.priority !== right.priority) {
-    return right.priority - left.priority;
+  if (Boolean(left.normalisation) !== Boolean(right.normalisation)) {
+    return left.normalisation ? 1 : -1;
+  }
+  if (left.catalogueIndex !== right.catalogueIndex) {
+    return left.catalogueIndex - right.catalogueIndex;
   }
   return left.label.localeCompare(right.label);
 }
 
-const FILE_SIGNATURE_PREVIEW_BYTES = 12;
+const FILE_DETECTION_PREVIEW_BYTES = 1024;
+const FILE_HEX_PREVIEW_BYTES = 12;
 
-function matchesSignature(bytes, signature) {
-  if (!bytes?.length || !signature?.length || bytes.length < signature.length) {
+function matchesBytesAtOffset(bytes, signatureBytes, offset = 0) {
+  if (
+    !bytes?.length ||
+    !signatureBytes?.length ||
+    offset + signatureBytes.length > bytes.length
+  ) {
     return false;
   }
 
-  return signature.every((value, index) => bytes[index] === value);
+  return signatureBytes.every(
+    (value, index) => bytes[offset + index] === value,
+  );
+}
+
+function normaliseTextPreview(value = "") {
+  return String(value).replace(/^\ufeff/, "").trimStart().toLowerCase();
+}
+
+function matchesSignature(bytes, signature, textPreview = "") {
+  if (!signature) {
+    return false;
+  }
+
+  if (Array.isArray(signature)) {
+    return matchesBytesAtOffset(bytes, signature, 0);
+  }
+
+  switch (signature.type) {
+    case "prefix":
+      return matchesBytesAtOffset(bytes, signature.bytes, 0);
+    case "marker":
+      return matchesBytesAtOffset(bytes, signature.bytes, signature.offset || 0);
+    case "compound":
+      return (signature.markers || []).every((marker) =>
+        matchesBytesAtOffset(bytes, marker.bytes, marker.offset || 0),
+      );
+    case "text":
+      return (signature.snippets || []).some((snippet) =>
+        textPreview.includes(snippet),
+      );
+    default:
+      return false;
+  }
 }
 
 function formatHexPreview(bytes, fileSize = 0) {
@@ -65,14 +148,16 @@ function formatHexPreview(bytes, fileSize = 0) {
     return "Unavailable";
   }
 
-  const preview = [...bytes].map((value) => value.toString(16).padStart(2, "0").toUpperCase());
+  const preview = [...bytes.slice(0, FILE_HEX_PREVIEW_BYTES)].map((value) =>
+    value.toString(16).padStart(2, "0").toUpperCase(),
+  );
   if (fileSize > bytes.length) {
     preview.push("...");
   }
   return preview.join(" ");
 }
 
-async function readSignatureBytes(file, byteCount = FILE_SIGNATURE_PREVIEW_BYTES) {
+async function readSignatureBytes(file, byteCount = FILE_DETECTION_PREVIEW_BYTES) {
   if (!file || typeof file.slice !== "function") {
     return new Uint8Array();
   }
@@ -85,6 +170,26 @@ async function readSignatureBytes(file, byteCount = FILE_SIGNATURE_PREVIEW_BYTES
   }
 }
 
+function decodeTextPreview(signatureBytes) {
+  if (!signatureBytes?.length) {
+    return "";
+  }
+
+  try {
+    return normaliseTextPreview(new TextDecoder("utf-8").decode(signatureBytes));
+  } catch {
+    return "";
+  }
+}
+
+function freezeBrowserHints(browser = {}) {
+  return Object.freeze({
+    decodable: Boolean(browser.decodable),
+    previewable: Boolean(browser.previewable),
+    renderNormalisable: Boolean(browser.renderNormalisable),
+  });
+}
+
 export class TransmuteRegistry {
   constructor() {
     this.formats = new Map();
@@ -94,6 +199,11 @@ export class TransmuteRegistry {
     this.handlers = new Map();
     this.handlersByFormatId = new Map();
     this.loadedHandlers = new Map();
+    this.normalisers = new Map();
+    this.loadedNormalisers = new Map();
+    this.formatOrder = 0;
+    this.handlerOrder = 0;
+    this.normaliserOrder = 0;
   }
 
   registerFormat(format) {
@@ -101,31 +211,38 @@ export class TransmuteRegistry {
       throw new Error("Each format requires an id and label.");
     }
 
-    const normalizedFormat = Object.freeze({
+    const normalisedMimeType = normaliseMimeType(format.mimeType);
+    const normalisedFormat = Object.freeze({
       id: format.id,
       label: format.label,
-      mimeType: format.mimeType || "",
-      mediaKind: format.mediaKind || "binary",
-      priority: Number.isFinite(format.priority) ? format.priority : 0,
+      mimeType: normalisedMimeType,
+      mimeAliases: Object.freeze(
+        (format.mimeAliases || [])
+          .map((alias) => normaliseMimeType(alias))
+          .filter(Boolean),
+      ),
+      mediaKind:
+        format.mediaKind || guessMediaKind(normalisedMimeType, format.extensions?.[0]),
+      family: format.family || "",
+      catalogueIndex: this.formatOrder,
       extensions: Object.freeze(
-        (format.extensions || []).map((extension) => normalizeExtension(extension)),
+        (format.extensions || []).map((extension) => normaliseExtension(extension)),
       ),
-      signatures: Object.freeze(
-        (format.signatures || []).map((signature) => Object.freeze([...signature])),
-      ),
+      signatures: Object.freeze([...(format.signatures || [])]),
+      browser: freezeBrowserHints(format.browser),
     });
 
-    this.formats.set(normalizedFormat.id, normalizedFormat);
+    this.formatOrder += 1;
+    this.formats.set(normalisedFormat.id, normalisedFormat);
 
-    if (normalizedFormat.mimeType) {
-      this.mimeToFormatId.set(
-        normalizedFormat.mimeType.toLowerCase(),
-        normalizedFormat.id,
-      );
-    }
+    [normalisedFormat.mimeType, ...normalisedFormat.mimeAliases]
+      .filter(Boolean)
+      .forEach((mimeType) => {
+        this.mimeToFormatId.set(mimeType, normalisedFormat.id);
+      });
 
-    normalizedFormat.extensions.forEach((extension) => {
-      this.extensionToFormatId.set(extension, normalizedFormat.id);
+    normalisedFormat.extensions.forEach((extension) => {
+      this.extensionToFormatId.set(extension, normalisedFormat.id);
     });
 
     return this;
@@ -155,11 +272,11 @@ export class TransmuteRegistry {
       throw new Error(`Unknown handler format: ${handler.formatId}`);
     }
 
-    const normalizedHandler = Object.freeze({
+    const normalisedHandler = Object.freeze({
       id: handler.id,
       label: handler.label || handler.id,
       formatId: handler.formatId,
-      priority: Number.isFinite(handler.priority) ? handler.priority : 0,
+      handlerIndex: this.handlerOrder,
       produces: Object.freeze([...(handler.produces || [])]),
       consumes: Object.freeze([...(handler.consumes || [])]),
       read: typeof handler.read === "function" ? handler.read : null,
@@ -167,34 +284,91 @@ export class TransmuteRegistry {
       load: typeof handler.load === "function" ? handler.load : null,
     });
 
-    normalizedHandler.produces.forEach((kindId) => {
+    this.handlerOrder += 1;
+
+    normalisedHandler.produces.forEach((kindId) => {
       if (!this.kinds.has(kindId)) {
         throw new Error(`Unknown produced kind: ${kindId}`);
       }
     });
-    normalizedHandler.consumes.forEach((kindId) => {
+    normalisedHandler.consumes.forEach((kindId) => {
       if (!this.kinds.has(kindId)) {
         throw new Error(`Unknown consumed kind: ${kindId}`);
       }
     });
 
     if (
-      normalizedHandler.produces.length &&
-      !normalizedHandler.read &&
-      !normalizedHandler.load
+      normalisedHandler.produces.length &&
+      !normalisedHandler.read &&
+      !normalisedHandler.load
     ) {
-      throw new Error(`Handler ${normalizedHandler.id} must implement read() or load().`);
+      throw new Error(`Handler ${normalisedHandler.id} must implement read() or load().`);
     }
     if (
-      normalizedHandler.consumes.length &&
-      !normalizedHandler.write &&
-      !normalizedHandler.load
+      normalisedHandler.consumes.length &&
+      !normalisedHandler.write &&
+      !normalisedHandler.load
     ) {
-      throw new Error(`Handler ${normalizedHandler.id} must implement write() or load().`);
+      throw new Error(`Handler ${normalisedHandler.id} must implement write() or load().`);
     }
 
-    this.handlers.set(normalizedHandler.id, normalizedHandler);
-    this.handlersByFormatId.set(normalizedHandler.formatId, normalizedHandler);
+    this.handlers.set(normalisedHandler.id, normalisedHandler);
+    this.handlersByFormatId.set(normalisedHandler.formatId, normalisedHandler);
+    return this;
+  }
+
+  registerNormaliser(normaliser) {
+    if (!normaliser?.id || !normaliser?.outputs?.length) {
+      throw new Error("Each normaliser requires an id and at least one output.");
+    }
+
+    const outputs = Object.freeze(
+      normaliser.outputs.map((output) => {
+        if (!output?.formatId || !this.formats.has(output.formatId)) {
+          throw new Error(`Unknown normaliser output format: ${output?.formatId || "missing"}`);
+        }
+
+        return Object.freeze({
+          formatId: output.formatId,
+          label: output.label || this.getFormat(output.formatId)?.label || output.formatId,
+          mode: output.mode || normaliser.mode || "",
+          lossProfile: output.lossProfile || normaliser.lossProfile || "",
+          explanation: output.explanation || normaliser.explanation || "",
+        });
+      }),
+    );
+
+    const normalisedNormaliser = Object.freeze({
+      id: normaliser.id,
+      label: normaliser.label || normaliser.id,
+      normaliserIndex: this.normaliserOrder,
+      mediaKinds: Object.freeze([...(normaliser.mediaKinds || [])]),
+      formatIds: Object.freeze([...(normaliser.formatIds || [])]),
+      mimePrefixes: Object.freeze(
+        (normaliser.mimePrefixes || []).map((prefix) =>
+          normaliseMimeType(prefix),
+        ),
+      ),
+      extensions: Object.freeze(
+        (normaliser.extensions || []).map((extension) =>
+          normaliseExtension(extension),
+        ),
+      ),
+      requiresBrowserRenderable: Boolean(normaliser.requiresBrowserRenderable),
+      whenUnknownOnly: Boolean(normaliser.whenUnknownOnly),
+      outputs,
+      normalise:
+        typeof normaliser.normalise === "function" ? normaliser.normalise : null,
+      load: typeof normaliser.load === "function" ? normaliser.load : null,
+    });
+
+    this.normaliserOrder += 1;
+
+    if (!normalisedNormaliser.normalise && !normalisedNormaliser.load) {
+      throw new Error(`Normaliser ${normalisedNormaliser.id} must implement normalise() or load().`);
+    }
+
+    this.normalisers.set(normalisedNormaliser.id, normalisedNormaliser);
     return this;
   }
 
@@ -246,6 +420,43 @@ export class TransmuteRegistry {
     return resolvedHandler;
   }
 
+  async resolveNormaliser(normaliser) {
+    if (!normaliser) {
+      return null;
+    }
+
+    if (normaliser.normalise) {
+      return normaliser;
+    }
+
+    if (!normaliser.load) {
+      throw new Error(`Normaliser ${normaliser.id} has no implementation loader.`);
+    }
+
+    if (this.loadedNormalisers.has(normaliser.id)) {
+      return this.loadedNormalisers.get(normaliser.id);
+    }
+
+    const loadedNormaliser = await normaliser.load();
+    if (!loadedNormaliser?.id || loadedNormaliser.id !== normaliser.id) {
+      throw new Error(`Normaliser loader mismatch for ${normaliser.id}.`);
+    }
+
+    const resolvedNormaliser = Object.freeze({
+      ...normaliser,
+      ...loadedNormaliser,
+      outputs: normaliser.outputs,
+      normalise:
+        typeof loadedNormaliser.normalise === "function"
+          ? loadedNormaliser.normalise
+          : normaliser.normalise,
+      load: normaliser.load,
+    });
+
+    this.loadedNormalisers.set(normaliser.id, resolvedNormaliser);
+    return resolvedNormaliser;
+  }
+
   getNodeLabel(node) {
     if (!node) return "";
     if (node.type === "format") {
@@ -278,8 +489,8 @@ export class TransmuteRegistry {
       return [...this.handlers.values()]
         .filter((handler) => handler.consumes.includes(node.id))
         .sort((left, right) => {
-          if (left.priority !== right.priority) {
-            return right.priority - left.priority;
+          if (left.handlerIndex !== right.handlerIndex) {
+            return left.handlerIndex - right.handlerIndex;
           }
           return left.label.localeCompare(right.label);
         })
@@ -327,13 +538,17 @@ export class TransmuteRegistry {
     return null;
   }
 
-  getFormatIdFromSignature(signatureBytes) {
+  getFormatIdFromSignature(signatureBytes, textPreview = "") {
     if (!signatureBytes?.length) {
       return null;
     }
 
     for (const format of this.formats.values()) {
-      if (format.signatures.some((signature) => matchesSignature(signatureBytes, signature))) {
+      if (
+        format.signatures.some((signature) =>
+          matchesSignature(signatureBytes, signature, textPreview),
+        )
+      ) {
         return format.id;
       }
     }
@@ -341,49 +556,15 @@ export class TransmuteRegistry {
     return null;
   }
 
-  async describeFile(file) {
-    const extension = extractExtension(file?.name);
-    const signatureBytes = await readSignatureBytes(file);
-    const formatIdFromSignature = this.getFormatIdFromSignature(signatureBytes);
-    const formatIdFromMime = file?.type
-      ? this.mimeToFormatId.get(file.type.toLowerCase())
-      : null;
-    const formatIdFromExtension = extension
-      ? this.extensionToFormatId.get(extension)
-      : null;
-    const formatId =
-      formatIdFromSignature || formatIdFromMime || formatIdFromExtension || null;
-    const format = formatId ? this.getFormat(formatId) : null;
-    const handler = format ? this.getHandlerByFormatId(format.id) : null;
-    const hasRoute = Boolean(
-      format &&
-        handler &&
-        this.listTargets(format.id).length,
-    );
-
-    return {
-      file,
-      fileName: file?.name || "",
-      fileSize: Number(file?.size) || 0,
-      extension,
-      mimeType: file?.type || format?.mimeType || "",
-      fileHex: formatHexPreview(signatureBytes, Number(file?.size) || 0),
-      formatId: format?.id || null,
-      formatLabel: format?.label || guessFallbackLabel(file, extension),
-      mediaKind: format?.mediaKind || "binary",
-      isKnownFormat: Boolean(format),
-      isSupportedSource: hasRoute,
-      detectedBy: formatIdFromSignature
-        ? "signature"
-        : formatIdFromMime
-          ? "mime"
-          : formatIdFromExtension
-            ? "extension"
-            : "",
-    };
+  getFormatIdFromMime(mimeType = "") {
+    const normalisedMimeType = normaliseMimeType(mimeType);
+    if (!normalisedMimeType) {
+      return null;
+    }
+    return this.mimeToFormatId.get(normalisedMimeType) || null;
   }
 
-  listTargets(sourceFormatId) {
+  buildDirectTargetPlans(sourceFormatId) {
     if (!sourceFormatId || !this.formats.has(sourceFormatId)) {
       return [];
     }
@@ -402,23 +583,265 @@ export class TransmuteRegistry {
           mimeType: format.mimeType,
           extension: format.extensions?.[0] || "",
           mediaKind: format.mediaKind,
-          priority: format.priority,
+          family: format.family,
+          catalogueIndex: format.catalogueIndex,
           route,
           steps: route.length,
+          totalSteps: route.length,
+          sourceFormatId,
+          normalisation: null,
         };
       })
       .filter(Boolean)
       .sort(compareTargetPlans);
   }
 
-  async convert(file, targetFormatId, options = {}) {
-    const source = await this.describeFile(file);
-    if (!source.formatId || !source.isSupportedSource) {
-      throw new Error("No registered handler can read this file yet.");
+  matchesNormaliser(normaliser, description) {
+    if (!normaliser || !description) {
+      return false;
+    }
+    if (normaliser.whenUnknownOnly && description.isKnownFormat) {
+      return false;
+    }
+    if (
+      normaliser.mediaKinds.length &&
+      !normaliser.mediaKinds.includes(description.mediaKind)
+    ) {
+      return false;
+    }
+    if (normaliser.formatIds.length) {
+      if (!description.formatId || !normaliser.formatIds.includes(description.formatId)) {
+        return false;
+      }
+    }
+    if (normaliser.mimePrefixes.length) {
+      const mimeType = normaliseMimeType(description.mimeType);
+      if (
+        !mimeType ||
+        !normaliser.mimePrefixes.some((prefix) => mimeType.startsWith(prefix))
+      ) {
+        return false;
+      }
+    }
+    if (normaliser.extensions.length) {
+      if (!description.extension || !normaliser.extensions.includes(description.extension)) {
+        return false;
+      }
+    }
+    if (
+      normaliser.requiresBrowserRenderable &&
+      !description.browserRenderable
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  createNormalisedTargetPlan(normaliser, output, targetFormat, route) {
+    return {
+      formatId: targetFormat.id,
+      label: targetFormat.label,
+      mimeType: targetFormat.mimeType,
+      extension: targetFormat.extensions?.[0] || "",
+      mediaKind: targetFormat.mediaKind,
+      family: targetFormat.family,
+      catalogueIndex: targetFormat.catalogueIndex,
+      route,
+      steps: route.length,
+      totalSteps: route.length + 1,
+      sourceFormatId: output.formatId,
+      normalisation: {
+        normaliserId: normaliser.id,
+        normaliserLabel: normaliser.label,
+        outputFormatId: output.formatId,
+        outputFormatLabel: this.getFormat(output.formatId)?.label || output.formatId,
+        mode: output.mode,
+        lossProfile: output.lossProfile,
+        explanation: output.explanation,
+        normaliserIndex: normaliser.normaliserIndex,
+        outputIndex: normaliser.outputs.indexOf(output),
+      },
+    };
+  }
+
+  listNormalisedTargets(description, targetFormatId = "") {
+    const targetPlansByFormatId = new Map();
+
+    for (const normaliser of this.normalisers.values()) {
+      if (!this.matchesNormaliser(normaliser, description)) {
+        continue;
+      }
+
+      normaliser.outputs.forEach((output) => {
+        const sourceFormat = this.getFormat(output.formatId);
+        if (!sourceFormat) {
+          return;
+        }
+
+        if (targetFormatId) {
+          const targetFormat = this.getFormat(targetFormatId);
+          if (!targetFormat) {
+            return;
+          }
+
+          const route =
+            output.formatId === targetFormatId
+              ? []
+              : this.findRoute(output.formatId, targetFormatId);
+
+          if (!route && output.formatId !== targetFormatId) {
+            return;
+          }
+
+          const targetPlan = this.createNormalisedTargetPlan(
+            normaliser,
+            output,
+            targetFormat,
+            route || [],
+          );
+          const existingPlan = targetPlansByFormatId.get(targetFormat.id);
+          if (!existingPlan || compareTargetPlans(targetPlan, existingPlan) < 0) {
+            targetPlansByFormatId.set(targetFormat.id, targetPlan);
+          }
+          return;
+        }
+
+        const directOutputPlan = this.createNormalisedTargetPlan(
+          normaliser,
+          output,
+          sourceFormat,
+          [],
+        );
+        const existingOutputPlan = targetPlansByFormatId.get(sourceFormat.id);
+        if (
+          !existingOutputPlan ||
+          compareTargetPlans(directOutputPlan, existingOutputPlan) < 0
+        ) {
+          targetPlansByFormatId.set(sourceFormat.id, directOutputPlan);
+        }
+
+        this.buildDirectTargetPlans(output.formatId).forEach((directTargetPlan) => {
+          const targetPlan = this.createNormalisedTargetPlan(
+            normaliser,
+            output,
+            this.getFormat(directTargetPlan.formatId),
+            directTargetPlan.route,
+          );
+          const existingPlan = targetPlansByFormatId.get(targetPlan.formatId);
+          if (!existingPlan || compareTargetPlans(targetPlan, existingPlan) < 0) {
+            targetPlansByFormatId.set(targetPlan.formatId, targetPlan);
+          }
+        });
+      });
     }
 
-    const route = this.findRoute(source.formatId, targetFormatId);
-    if (!route?.length) {
+    return [...targetPlansByFormatId.values()].sort(compareTargetPlans);
+  }
+
+  listTargets(sourceFormatId) {
+    return this.buildDirectTargetPlans(sourceFormatId);
+  }
+
+  listTargetsForDescription(description) {
+    if (!description) {
+      return [];
+    }
+
+    const directTargetPlans = description.formatId
+      ? this.buildDirectTargetPlans(description.formatId)
+      : [];
+
+    if (directTargetPlans.length) {
+      return directTargetPlans;
+    }
+
+    return this.listNormalisedTargets(description);
+  }
+
+  findTargetPlan(description, targetFormatId) {
+    if (!targetFormatId) {
+      return null;
+    }
+
+    if (description?.formatId) {
+      const directTargetPlan = this.buildDirectTargetPlans(description.formatId).find(
+        (plan) => plan.formatId === targetFormatId,
+      );
+      if (directTargetPlan) {
+        return directTargetPlan;
+      }
+    }
+
+    return (
+      this.listNormalisedTargets(description, targetFormatId).find(
+        (plan) => plan.formatId === targetFormatId,
+      ) || null
+    );
+  }
+
+  async describeFile(file) {
+    const extension = extractExtension(file?.name);
+    const signatureBytes = await readSignatureBytes(file);
+    const textPreview = decodeTextPreview(signatureBytes);
+    const formatIdFromSignature = this.getFormatIdFromSignature(
+      signatureBytes,
+      textPreview,
+    );
+    const formatIdFromMime = this.getFormatIdFromMime(file?.type);
+    const formatIdFromExtension = extension
+      ? this.extensionToFormatId.get(extension)
+      : null;
+    const formatId =
+      formatIdFromSignature || formatIdFromMime || formatIdFromExtension || null;
+    const format = formatId ? this.getFormat(formatId) : null;
+    const mimeType = file?.type || format?.mimeType || "";
+    const mediaKind = format?.mediaKind || guessMediaKind(mimeType, extension);
+
+    const description = {
+      file,
+      fileName: file?.name || "",
+      fileSize: Number(file?.size) || 0,
+      extension,
+      mimeType,
+      fileHex: formatHexPreview(signatureBytes, Number(file?.size) || 0),
+      formatId: format?.id || null,
+      formatLabel: format?.label || guessFallbackLabel(file, extension),
+      mediaKind,
+      family: format?.family || "",
+      isKnownFormat: Boolean(format),
+      browserRenderable: Boolean(
+        format?.browser?.renderNormalisable ||
+          normaliseMimeType(mimeType).startsWith("image/"),
+      ),
+      detectedBy: formatIdFromSignature
+        ? "signature"
+        : formatIdFromMime
+          ? "mime"
+          : formatIdFromExtension
+            ? "extension"
+            : "",
+    };
+
+    const directTargetPlans = description.formatId
+      ? this.buildDirectTargetPlans(description.formatId)
+      : [];
+    const normalisedTargetPlans = directTargetPlans.length
+      ? []
+      : this.listNormalisedTargets(description);
+
+    return {
+      ...description,
+      hasDirectRoute: directTargetPlans.length > 0,
+      hasNormalisationRoute: normalisedTargetPlans.length > 0,
+      isSupportedSource:
+        directTargetPlans.length > 0 || normalisedTargetPlans.length > 0,
+    };
+  }
+
+  async convert(file, targetFormatId, options = {}) {
+    const source = await this.describeFile(file);
+    const targetPlan = this.findTargetPlan(source, targetFormatId);
+    if (!targetPlan) {
       throw new Error("No conversion route is registered for that target format.");
     }
 
@@ -430,14 +853,27 @@ export class TransmuteRegistry {
       formatId: source.formatId,
     };
 
-    for (const step of route) {
+    if (targetPlan.normalisation) {
+      const normaliser = await this.resolveNormaliser(
+        this.normalisers.get(targetPlan.normalisation.normaliserId),
+      );
+      asset = await normaliser.normalise(file, {
+        source,
+        outputFormat: this.getFormat(targetPlan.normalisation.outputFormatId),
+        targetFormat: this.getFormat(targetPlan.formatId),
+        options,
+        buildOutputFileName,
+      });
+    }
+
+    for (const step of targetPlan.route) {
       const handler = await this.resolveHandler(step.handler);
       if (step.operation === "read") {
         asset = await handler.read(asset, {
           sourceFormat: this.getFormat(step.fromNode.id),
           intermediateKind: this.getKind(step.toNode.id),
           options,
-          route,
+          route: targetPlan.route,
           buildOutputFileName,
         });
         continue;
@@ -447,11 +883,16 @@ export class TransmuteRegistry {
         sourceKind: this.getKind(step.fromNode.id),
         targetFormat: this.getFormat(step.toNode.id),
         options,
-        route,
+        route: targetPlan.route,
         buildOutputFileName,
       });
     }
 
-    return { asset, route };
+    return {
+      asset,
+      route: targetPlan.route,
+      normalisation: targetPlan.normalisation,
+      targetPlan,
+    };
   }
 }
