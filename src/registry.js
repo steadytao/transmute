@@ -1,4 +1,8 @@
+// Copyright (c) 2026 Tao
+// SPDX-License-Identifier: MPL-2.0
 /* Transmute routing, catalogue, and normalisation registry. */
+
+import { normaliseOutputAsset } from "./output.js";
 
 function normaliseExtension(value = "") {
   const trimmed = String(value).trim().toLowerCase();
@@ -32,6 +36,7 @@ function guessMediaKind(mimeType = "", extension = "") {
 
   if (
     [
+      ".apng",
       ".png",
       ".jpg",
       ".jpeg",
@@ -41,8 +46,43 @@ function guessMediaKind(mimeType = "", extension = "") {
       ".bmp",
       ".tif",
       ".tiff",
+      ".tga",
+      ".icb",
+      ".vda",
+      ".vst",
       ".ico",
+      ".icns",
       ".avif",
+      ".heic",
+      ".heics",
+      ".heif",
+      ".heifs",
+      ".hif",
+      ".jxl",
+      ".jp2",
+      ".j2k",
+      ".jpx",
+      ".jpm",
+      ".mj2",
+      ".jxr",
+      ".wdp",
+      ".hdp",
+      ".cur",
+      ".bpg",
+      ".qoi",
+      ".dds",
+      ".exr",
+      ".hdr",
+      ".rgbe",
+      ".psd",
+      ".psb",
+      ".ktx",
+      ".ktx2",
+      ".pbm",
+      ".pgm",
+      ".ppm",
+      ".pam",
+      ".mng",
     ].includes(normalisedExtension)
   ) {
     return "image";
@@ -89,6 +129,9 @@ function compareTargetPlans(left, right) {
   if (Boolean(left.normalisation) !== Boolean(right.normalisation)) {
     return left.normalisation ? 1 : -1;
   }
+  if ((left.optionOrder || 10_000) !== (right.optionOrder || 10_000)) {
+    return (left.optionOrder || 10_000) - (right.optionOrder || 10_000);
+  }
   if (left.catalogueIndex !== right.catalogueIndex) {
     return left.catalogueIndex - right.catalogueIndex;
   }
@@ -112,6 +155,58 @@ function matchesBytesAtOffset(bytes, signatureBytes, offset = 0) {
   );
 }
 
+function matchesBytesAtSuffix(bytes, signatureBytes) {
+  if (!bytes?.length || !signatureBytes?.length || signatureBytes.length > bytes.length) {
+    return false;
+  }
+
+  return matchesBytesAtOffset(
+    bytes,
+    signatureBytes,
+    bytes.length - signatureBytes.length,
+  );
+}
+
+function findPngChunk(bytes, chunkName = "") {
+  if (!bytes?.length || bytes.length < 16) {
+    return false;
+  }
+
+  const normalisedChunkName = String(chunkName).trim();
+  if (!normalisedChunkName || normalisedChunkName.length !== 4) {
+    return false;
+  }
+
+  const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (!matchesBytesAtOffset(bytes, pngSignature, 0)) {
+    return false;
+  }
+
+  let offset = 8;
+  while (offset + 8 <= bytes.length) {
+    const chunkLength =
+      ((bytes[offset] << 24) >>> 0) |
+      (bytes[offset + 1] << 16) |
+      (bytes[offset + 2] << 8) |
+      bytes[offset + 3];
+    const chunkType = String.fromCharCode(
+      bytes[offset + 4],
+      bytes[offset + 5],
+      bytes[offset + 6],
+      bytes[offset + 7],
+    );
+    if (chunkType === normalisedChunkName) {
+      return true;
+    }
+    offset += 12 + chunkLength;
+    if (chunkType === "IEND") {
+      return false;
+    }
+  }
+
+  return false;
+}
+
 function normaliseTextPreview(value = "") {
   return String(value).replace(/^\ufeff/, "").trimStart().toLowerCase();
 }
@@ -130,6 +225,8 @@ function matchesSignature(bytes, signature, textPreview = "") {
       return matchesBytesAtOffset(bytes, signature.bytes, 0);
     case "marker":
       return matchesBytesAtOffset(bytes, signature.bytes, signature.offset || 0);
+    case "suffix":
+      return matchesBytesAtSuffix(bytes, signature.bytes);
     case "compound":
       return (signature.markers || []).every((marker) =>
         matchesBytesAtOffset(bytes, marker.bytes, marker.offset || 0),
@@ -138,6 +235,8 @@ function matchesSignature(bytes, signature, textPreview = "") {
       return (signature.snippets || []).some((snippet) =>
         textPreview.includes(snippet),
       );
+    case "png-chunk":
+      return findPngChunk(bytes, signature.chunkName);
     default:
       return false;
   }
@@ -190,6 +289,20 @@ function freezeBrowserHints(browser = {}) {
   });
 }
 
+function freezeTraits(traits = {}) {
+  return Object.freeze({
+    supportsTransparency: Boolean(traits.supportsTransparency),
+    lossy: Boolean(traits.lossy),
+    vector: Boolean(traits.vector),
+    animated: Boolean(traits.animated),
+    multiImage: Boolean(traits.multiImage),
+  });
+}
+
+function dedupeAdvisories(values) {
+  return [...new Set(values.filter(Boolean))];
+}
+
 export class TransmuteRegistry {
   constructor() {
     this.formats = new Map();
@@ -208,7 +321,7 @@ export class TransmuteRegistry {
 
   registerFormat(format) {
     if (!format?.id || !format?.label) {
-      throw new Error("Each format requires an id and label.");
+      throw new Error("Each format requires an id and label");
     }
 
     const normalisedMimeType = normaliseMimeType(format.mimeType);
@@ -224,12 +337,14 @@ export class TransmuteRegistry {
       mediaKind:
         format.mediaKind || guessMediaKind(normalisedMimeType, format.extensions?.[0]),
       family: format.family || "",
+      optionOrder: Number(format.optionOrder) || 10_000,
       catalogueIndex: this.formatOrder,
       extensions: Object.freeze(
         (format.extensions || []).map((extension) => normaliseExtension(extension)),
       ),
       signatures: Object.freeze([...(format.signatures || [])]),
       browser: freezeBrowserHints(format.browser),
+      traits: freezeTraits(format.traits),
     });
 
     this.formatOrder += 1;
@@ -250,7 +365,7 @@ export class TransmuteRegistry {
 
   registerKind(kind) {
     if (!kind?.id || !kind?.label) {
-      throw new Error("Each intermediate kind requires an id and label.");
+      throw new Error("Each intermediate kind requires an id and label");
     }
 
     this.kinds.set(
@@ -266,7 +381,7 @@ export class TransmuteRegistry {
 
   registerHandler(handler) {
     if (!handler?.id || !handler?.formatId) {
-      throw new Error("Each handler requires an id and formatId.");
+      throw new Error("Each handler requires an id and formatId");
     }
     if (!this.formats.has(handler.formatId)) {
       throw new Error(`Unknown handler format: ${handler.formatId}`);
@@ -279,6 +394,7 @@ export class TransmuteRegistry {
       handlerIndex: this.handlerOrder,
       produces: Object.freeze([...(handler.produces || [])]),
       consumes: Object.freeze([...(handler.consumes || [])]),
+      sequenceWriteMode: handler.sequenceWriteMode || "",
       read: typeof handler.read === "function" ? handler.read : null,
       write: typeof handler.write === "function" ? handler.write : null,
       load: typeof handler.load === "function" ? handler.load : null,
@@ -302,14 +418,14 @@ export class TransmuteRegistry {
       !normalisedHandler.read &&
       !normalisedHandler.load
     ) {
-      throw new Error(`Handler ${normalisedHandler.id} must implement read() or load().`);
+      throw new Error(`Handler ${normalisedHandler.id} must implement read() or load()`);
     }
     if (
       normalisedHandler.consumes.length &&
       !normalisedHandler.write &&
       !normalisedHandler.load
     ) {
-      throw new Error(`Handler ${normalisedHandler.id} must implement write() or load().`);
+      throw new Error(`Handler ${normalisedHandler.id} must implement write() or load()`);
     }
 
     this.handlers.set(normalisedHandler.id, normalisedHandler);
@@ -319,7 +435,7 @@ export class TransmuteRegistry {
 
   registerNormaliser(normaliser) {
     if (!normaliser?.id || !normaliser?.outputs?.length) {
-      throw new Error("Each normaliser requires an id and at least one output.");
+      throw new Error("Each normaliser requires an id and at least one output");
     }
 
     const outputs = Object.freeze(
@@ -365,7 +481,7 @@ export class TransmuteRegistry {
     this.normaliserOrder += 1;
 
     if (!normalisedNormaliser.normalise && !normalisedNormaliser.load) {
-      throw new Error(`Normaliser ${normalisedNormaliser.id} must implement normalise() or load().`);
+      throw new Error(`Normaliser ${normalisedNormaliser.id} must implement normalise() or load()`);
     }
 
     this.normalisers.set(normalisedNormaliser.id, normalisedNormaliser);
@@ -394,7 +510,7 @@ export class TransmuteRegistry {
     }
 
     if (!handler.load) {
-      throw new Error(`Handler ${handler.id} has no implementation loader.`);
+      throw new Error(`Handler ${handler.id} has no implementation loader`);
     }
 
     if (this.loadedHandlers.has(handler.id)) {
@@ -411,6 +527,8 @@ export class TransmuteRegistry {
       ...loadedHandler,
       produces: Object.freeze([...(loadedHandler.produces || handler.produces || [])]),
       consumes: Object.freeze([...(loadedHandler.consumes || handler.consumes || [])]),
+      sequenceWriteMode:
+        loadedHandler.sequenceWriteMode || handler.sequenceWriteMode || "",
       read: typeof loadedHandler.read === "function" ? loadedHandler.read : null,
       write: typeof loadedHandler.write === "function" ? loadedHandler.write : null,
       load: handler.load,
@@ -430,7 +548,7 @@ export class TransmuteRegistry {
     }
 
     if (!normaliser.load) {
-      throw new Error(`Normaliser ${normaliser.id} has no implementation loader.`);
+      throw new Error(`Normaliser ${normaliser.id} has no implementation loader`);
     }
 
     if (this.loadedNormalisers.has(normaliser.id)) {
@@ -584,6 +702,7 @@ export class TransmuteRegistry {
           extension: format.extensions?.[0] || "",
           mediaKind: format.mediaKind,
           family: format.family,
+          optionOrder: format.optionOrder,
           catalogueIndex: format.catalogueIndex,
           route,
           steps: route.length,
@@ -594,6 +713,200 @@ export class TransmuteRegistry {
       })
       .filter(Boolean)
       .sort(compareTargetPlans);
+  }
+
+  sourceCanBeTransparent(sourceFormat) {
+    if (!sourceFormat) {
+      return false;
+    }
+
+    return Boolean(
+      sourceFormat.traits?.supportsTransparency || sourceFormat.traits?.vector,
+    );
+  }
+
+  planExportsFrameArchive(targetPlan) {
+    const finalStep = targetPlan?.route?.[targetPlan.route.length - 1] || null;
+    return Boolean(
+      finalStep?.operation === "write" &&
+      finalStep?.fromNode?.type === "kind" &&
+      finalStep?.fromNode?.id === "raster-frame-sequence" &&
+      finalStep?.handler?.sequenceWriteMode !== "container",
+    );
+  }
+
+  planWritesSequenceContainer(targetPlan) {
+    const finalStep = targetPlan?.route?.[targetPlan.route.length - 1] || null;
+    return Boolean(
+      finalStep?.operation === "write" &&
+      finalStep?.fromNode?.type === "kind" &&
+      finalStep?.fromNode?.id === "raster-frame-sequence" &&
+      finalStep?.handler?.sequenceWriteMode === "container",
+    );
+  }
+
+  buildPlanAdvisories(sourceDescription, targetPlan) {
+    if (!targetPlan) {
+      return [];
+    }
+
+    const sourceFormat = sourceDescription?.formatId
+      ? this.getFormat(sourceDescription.formatId)
+      : null;
+    const targetFormat = this.getFormat(targetPlan.formatId);
+    const sourceLabel =
+      sourceFormat?.label || sourceDescription?.formatLabel || "Source";
+    const exportsFrameArchive = this.planExportsFrameArchive(targetPlan);
+    const writesSequenceContainer = this.planWritesSequenceContainer(targetPlan);
+    const advisories = [];
+
+    if (targetPlan.normalisation?.explanation) {
+      advisories.push(targetPlan.normalisation.explanation);
+    }
+
+    if (sourceFormat?.traits?.vector) {
+      advisories.push(`${sourceLabel} sources are rasterised before conversion`);
+    }
+
+    if (sourceFormat?.traits?.animated) {
+      if (exportsFrameArchive) {
+        advisories.push(
+          `Animated ${sourceLabel} files are extracted and packaged as individual ${targetFormat.label} frames in a ZIP archive`,
+        );
+      } else if (!writesSequenceContainer) {
+        advisories.push(`Animated ${sourceLabel} files are reduced to a single frame for ${targetFormat.label} output`);
+      }
+    }
+
+    if (sourceFormat?.traits?.multiImage) {
+      advisories.push(`${sourceLabel} sources are decoded from a single embedded image during conversion`);
+    }
+
+    if (
+      targetFormat?.id === "image/jpeg" &&
+      this.sourceCanBeTransparent(sourceFormat)
+    ) {
+      advisories.push(
+        "Transparency is flattened onto a white background for JPG output",
+      );
+    }
+
+    if (
+      targetFormat?.id === "image/gif" &&
+      this.sourceCanBeTransparent(sourceFormat)
+    ) {
+      advisories.push(
+        "Transparency is flattened onto a white background for GIF output",
+      );
+    }
+
+    if (
+      targetFormat?.id === "image/jpeg" &&
+      sourceFormat?.id !== "image/jpeg"
+    ) {
+      advisories.push("JPG output is browser-encoded and lossy");
+    }
+
+    if (
+      targetFormat?.id === "image/gif" &&
+      sourceFormat?.id !== "image/gif"
+    ) {
+      advisories.push("GIF output is limited to a 256-colour indexed palette and may be lossy");
+    }
+
+    if (
+      targetFormat?.id === "image/svg+xml" &&
+      sourceFormat?.id !== "image/svg+xml"
+    ) {
+      advisories.push("SVG output wraps the raster image in an SVG container to preserve visual fidelity");
+    }
+
+    if (
+      targetFormat?.id === "image/bmp" &&
+      sourceFormat?.id !== "image/bmp"
+    ) {
+      advisories.push("BMP output is written as an uncompressed 32-bit bitmap");
+    }
+
+    if (
+      targetFormat?.id === "image/icns" &&
+      sourceFormat?.id !== "image/icns"
+    ) {
+      advisories.push("ICNS output packages PNG icon sizes in an Apple icon container");
+    }
+
+    if (
+      targetFormat?.id === "image/x-icon" &&
+      sourceFormat?.id !== "image/x-icon"
+    ) {
+      advisories.push("ICO output stores a single embedded PNG image");
+    }
+
+    if (
+      targetFormat?.id === "image/webp" &&
+      sourceFormat?.id !== "image/webp"
+    ) {
+      advisories.push("WEBP output is browser-encoded and may be lossy");
+    }
+
+    if (
+      targetFormat?.id === "image/avif" &&
+      sourceFormat?.id !== "image/avif"
+    ) {
+      advisories.push("AVIF output is encoded locally and may be lossy");
+    }
+
+    if (
+      targetFormat?.id === "image/heic" &&
+      sourceFormat?.id !== "image/heic"
+    ) {
+      advisories.push("HEIC output is encoded locally and may be lossy");
+    }
+
+    if (
+      targetFormat?.id === "image/heif" &&
+      sourceFormat?.id !== "image/heif"
+    ) {
+      advisories.push("HEIF output is encoded locally and may be lossy");
+    }
+
+    if (
+      targetFormat?.id === "image/x-win-bitmap-cursor" &&
+      sourceFormat?.id !== "image/x-win-bitmap-cursor"
+    ) {
+      advisories.push("CUR output stores a single embedded PNG cursor with a 0,0 hotspot");
+    }
+
+    if (
+      targetFormat?.id === "image/ktx" &&
+      sourceFormat?.id !== "image/ktx"
+    ) {
+      advisories.push("KTX output is written as an uncompressed RGBA texture container");
+    }
+
+    if (
+      targetFormat?.id === "image/ktx2" &&
+      sourceFormat?.id !== "image/ktx2"
+    ) {
+      advisories.push("KTX2 output is written as an uncompressed RGBA texture container");
+    }
+
+    return dedupeAdvisories(advisories);
+  }
+
+  attachPlanAdvisories(sourceDescription, targetPlans) {
+    return targetPlans.map((targetPlan) => {
+      const advisories = this.buildPlanAdvisories(sourceDescription, targetPlan);
+      const exportsFrameArchive = this.planExportsFrameArchive(targetPlan);
+      return Object.freeze({
+        ...targetPlan,
+        exportsFrameArchive,
+        actionLabel: exportsFrameArchive ? "Frames (ZIP)" : targetPlan.label,
+        advisories: Object.freeze(advisories),
+        primaryAdvisory: advisories[0] || "",
+        advisoryText: advisories.join(" • "),
+      });
+    });
   }
 
   matchesNormaliser(normaliser, description) {
@@ -645,6 +958,7 @@ export class TransmuteRegistry {
       extension: targetFormat.extensions?.[0] || "",
       mediaKind: targetFormat.mediaKind,
       family: targetFormat.family,
+      optionOrder: targetFormat.optionOrder,
       catalogueIndex: targetFormat.catalogueIndex,
       route,
       steps: route.length,
@@ -739,7 +1053,16 @@ export class TransmuteRegistry {
   }
 
   listTargets(sourceFormatId) {
-    return this.buildDirectTargetPlans(sourceFormatId);
+    const sourceFormat = this.getFormat(sourceFormatId);
+    return this.attachPlanAdvisories(
+      {
+        formatId: sourceFormat?.id || "",
+        formatLabel: sourceFormat?.label || "",
+        mediaKind: sourceFormat?.mediaKind || "",
+        isKnownFormat: Boolean(sourceFormat),
+      },
+      this.buildDirectTargetPlans(sourceFormatId),
+    );
   }
 
   listTargetsForDescription(description) {
@@ -752,10 +1075,13 @@ export class TransmuteRegistry {
       : [];
 
     if (directTargetPlans.length) {
-      return directTargetPlans;
+      return this.attachPlanAdvisories(description, directTargetPlans);
     }
 
-    return this.listNormalisedTargets(description);
+    return this.attachPlanAdvisories(
+      description,
+      this.listNormalisedTargets(description),
+    );
   }
 
   findTargetPlan(description, targetFormatId) {
@@ -763,17 +1089,8 @@ export class TransmuteRegistry {
       return null;
     }
 
-    if (description?.formatId) {
-      const directTargetPlan = this.buildDirectTargetPlans(description.formatId).find(
-        (plan) => plan.formatId === targetFormatId,
-      );
-      if (directTargetPlan) {
-        return directTargetPlan;
-      }
-    }
-
     return (
-      this.listNormalisedTargets(description, targetFormatId).find(
+      this.listTargetsForDescription(description).find(
         (plan) => plan.formatId === targetFormatId,
       ) || null
     );
@@ -842,7 +1159,7 @@ export class TransmuteRegistry {
     const source = await this.describeFile(file);
     const targetPlan = this.findTargetPlan(source, targetFormatId);
     if (!targetPlan) {
-      throw new Error("No conversion route is registered for that target format.");
+      throw new Error("No conversion route is registered for that target format");
     }
 
     let asset = {
@@ -890,6 +1207,10 @@ export class TransmuteRegistry {
 
     return {
       asset,
+      output: await normaliseOutputAsset(
+        asset,
+        this.getFormat(targetPlan.formatId)?.label || "File",
+      ),
       route: targetPlan.route,
       normalisation: targetPlan.normalisation,
       targetPlan,

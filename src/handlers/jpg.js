@@ -1,54 +1,19 @@
+// Copyright (c) 2026 Tao
+// SPDX-License-Identifier: MPL-2.0
 /* JPG format handler. */
 
-import { canvasToBlob, readRasterAsset, renderRasterToCanvas } from "./raster.js";
+import { createBrowserImageHandler } from "./browser-image.js";
 
-export const jpgHandler = Object.freeze({
+export const jpgHandler = createBrowserImageHandler({
   id: "jpg",
   label: "JPG handler",
   formatId: "image/jpeg",
-  produces: Object.freeze(["raster-image"]),
-  consumes: Object.freeze(["raster-image"]),
-  async read(asset) {
-    const rasterAsset = await readRasterAsset(
-      asset.blob,
-      "The uploaded JPG could not be decoded.",
-    );
-    return {
-      ...rasterAsset,
-      sourceFileName: asset.fileName,
-    };
-  },
-  async write(intermediateAsset, context) {
-    const targetFormat = context.targetFormat;
-    const quality = Math.max(
-      0.1,
-      Math.min(1, Number(context.options?.quality) || 0.92),
-    );
-    try {
-      const canvas = renderRasterToCanvas(intermediateAsset, {
-        alpha: false,
-        backgroundColour: context.options?.backgroundColour || "#ffffff",
-      });
-
-      const outputBlob = await canvasToBlob(
-        canvas,
-        targetFormat.mimeType,
-        quality,
-        "The browser failed to encode the JPG output.",
-      );
-
-      return {
-        blob: outputBlob,
-        fileName: context.buildOutputFileName(
-          intermediateAsset.sourceFileName || "converted",
-          targetFormat.extensions[0],
-        ),
-        fileSize: outputBlob.size,
-        mimeType: targetFormat.mimeType,
-        formatId: targetFormat.id,
-      };
-    } finally {
-      intermediateAsset.release?.();
-    }
+  readError: "The uploaded JPG could not be decoded",
+  writeError: "The browser failed to encode the JPG output",
+  output: {
+    alpha: false,
+    flattenAlpha: true,
+    quality: "lossy",
+    defaultQuality: 0.92,
   },
 });

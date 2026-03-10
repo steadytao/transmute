@@ -1,0 +1,11 @@
+Transmute vendors third-party runtime components under `vendor/` for local browser-side
+format handling and encoding.
+
+Current vendored components:
+- `vendor/avif`: AVIF encoder runtime used for local AVIF output
+- `vendor/elheif`: HEIC and HEIF codec runtime used for local HEIC and HEIF output
+- `vendor/ktx-parse`: KTX and KTX2 container parsing helpers
+- `vendor/magick`: ImageMagick WebAssembly runtime used for broad image read and write support
+- `vendor/upng`: APNG encoding helpers and bundled DEFLATE support
+
+These components remain subject to their upstream licences and notices.
