@@ -1,10 +1,11 @@
+/* PNG format handler. */
+
 import { canvasToBlob, readRasterAsset, renderRasterToCanvas } from "./raster.js";
 
 export const pngHandler = Object.freeze({
   id: "png",
   label: "PNG handler",
   formatId: "image/png",
-  priority: 100,
   produces: Object.freeze(["raster-image"]),
   consumes: Object.freeze(["raster-image"]),
   async read(asset) {

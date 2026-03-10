@@ -1,10 +1,11 @@
+/* JPG format handler. */
+
 import { canvasToBlob, readRasterAsset, renderRasterToCanvas } from "./raster.js";
 
 export const jpgHandler = Object.freeze({
   id: "jpg",
   label: "JPG handler",
   formatId: "image/jpeg",
-  priority: 95,
   produces: Object.freeze(["raster-image"]),
   consumes: Object.freeze(["raster-image"]),
   async read(asset) {
@@ -26,7 +27,7 @@ export const jpgHandler = Object.freeze({
     try {
       const canvas = renderRasterToCanvas(intermediateAsset, {
         alpha: false,
-        backgroundColor: context.options?.backgroundColor || "#ffffff",
+        backgroundColour: context.options?.backgroundColour || "#ffffff",
       });
 
       const outputBlob = await canvasToBlob(

@@ -1,7 +1,7 @@
 {
   "name": "@steadytao/transmute",
   "version": "0.1.0",
-  "description": "Browser-side local file conversion runtime with pluggable formats, handlers, and route planning",
+  "description": "Browser-side local file conversion runtime with pluggable handlers, normalisers, and route planning",
   "type": "module",
   "exports": {
     ".": "./src/index.js",
@@ -9,6 +9,8 @@
     "./registry": "./src/registry.js",
     "./formats": "./src/formats.js",
     "./kinds": "./src/kinds.js",
+    "./normalisers": "./src/normalisers.js",
+    "./normalisers/browser-image-raster": "./src/normalisers/browser-image-raster.js",
     "./handlers/png": "./src/handlers/png.js",
     "./handlers/jpg": "./src/handlers/jpg.js",
     "./handlers/raster": "./src/handlers/raster.js"
